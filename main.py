@@ -9,7 +9,7 @@ from security import (
     verify_password, get_password_hash, create_access_token,
     oauth2_scheme, SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 )
-from database import fake_users_db
+from database import users_collection
 
 app = FastAPI(title="DevFlow API", description="Backend for DevFlow Application")
 
@@ -23,7 +23,8 @@ app.add_middleware(
 
 @app.post("/signup", status_code=status.HTTP_201_CREATED)
 async def signup(user: UserSignUp):
-    if user.email in fake_users_db:
+    existing_user = await users_collection.find_one({"email": user.email})
+    if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
@@ -35,12 +36,12 @@ async def signup(user: UserSignUp):
         hashed_password=hashed_password,
         name=user.name
     )
-    fake_users_db[user.email] = user_db
+    await users_collection.insert_one(user_db.model_dump())
     return {"message": "User created successfully", "email": user.email, "name": user.name}
 
 @app.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    user = fake_users_db.get(form_data.username)
+    user = await users_collection.find_one({"email": form_data.username})
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -48,7 +49,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    if not verify_password(form_data.password, user.hashed_password):
+    if not verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password",
@@ -57,13 +58,13 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
     access_token = create_access_token(
-        data={"sub": user.email}, expires_delta=access_token_expires
+        data={"sub": user["email"]}, expires_delta=access_token_expires
     )
     
     return {
         "access_token": access_token, 
         "token_type": "bearer", 
-        "user": {"email": user.email, "name": user.name}
+        "user": {"email": user["email"], "name": user.get("name", "")}
     }
 
 @app.get("/me")
@@ -76,11 +77,11 @@ async def read_users_me(token: str = Depends(oauth2_scheme)):
     except jwt.PyJWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication credentials")
     
-    user = fake_users_db.get(email)
+    user = await users_collection.find_one({"email": email})
     if user is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
         
-    return {"email": user.email, "name": user.name}
+    return {"email": user["email"], "name": user.get("name", "")}
 
 @app.get("/")
 async def root():
